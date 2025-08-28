@@ -1,84 +1,112 @@
 package org.work;
 
-/*
- * Copyright 2001-2005 The Apache Software Foundation.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
-
-import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
-import org.apache.maven.plugins.annotations.ResolutionScope;
+import org.apache.maven.plugins.annotations.LifecyclePhase;
+import org.json.JSONObject;
 
-import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
+import java.io.*;
+import java.nio.file.Files;
+import java.util.List;
 
-/**
- * Goal which touches a timestamp file.
- *
- * @deprecated Don't use!
- */
-@Mojo( name = "touch", defaultPhase = LifecyclePhase.PROCESS_SOURCES )
-public class MyMojo
-    extends AbstractMojo
-{
-    /**
-     * Location of the file.
-     */
-    @Parameter( defaultValue = "${project.build.directory}", property = "outputDir", required = true )
-    private File outputDirectory;
+import java.net.HttpURLConnection;
+import java.net.URL;
 
-    public void execute()
-        throws MojoExecutionException
-    {
-        File f = outputDirectory;
+@Mojo(name = "green-check", defaultPhase = LifecyclePhase.VERIFY)
+public class GreenCheckMojo extends AbstractMojo {
 
-        if ( !f.exists() )
-        {
-            f.mkdirs();
+    @Parameter(defaultValue = "${project.build.sourceDirectory}", required = true)
+    File sourceDirectory;
+
+    public void execute() throws MojoExecutionException {
+        getLog().info("Running green coding checks...");
+        getLog().info("Source directory: " + sourceDirectory.getAbsolutePath());
+
+        List<File> javaFiles = null;
+        try {
+            javaFiles = findJavaFiles(sourceDirectory);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
         }
 
-        File touch = new File( f, "touch.txt" );
-
-        FileWriter w = null;
-        try
-        {
-            w = new FileWriter( touch );
-
-            w.write( "touch.txt" );
+        if (javaFiles == null) {
+            getLog().info("Files are empty to analysis");
+            return;
         }
-        catch ( IOException e )
-        {
-            throw new MojoExecutionException( "Error creating file " + touch, e );
+
+        for (File file : javaFiles) {
+            try {
+                getLog().info("File analysing "+file.getName());
+                List<String> lines = Files.readAllLines(file.toPath());
+                String content = String.join("\n", lines);
+                analyzeWithOllama(content);
+            } catch (IOException e) {
+                getLog().error("Failed to read file: " + file.getName(), e);
+            }
         }
-        finally
-        {
-            if ( w != null )
-            {
-                try
-                {
-                    w.close();
+        getLog().info("Green coding analysis complete.");
+    }
+
+    private List<File> findJavaFiles(File dir) throws IOException {
+        return Files.walk(dir.toPath())
+                .filter(path -> path.toString().endsWith(".java"))
+                .map(java.nio.file.Path::toFile)
+                .toList();
+    }
+
+
+    private  void analyzeWithOllama(String code) {
+            try {
+                URL url = new URL("http://localhost:11434/api/generate");
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("POST");
+                conn.setDoOutput(true);
+                conn.setRequestProperty("Content-Type", "application/json");
+
+                // Build JSON payload safely
+                JSONObject json = new JSONObject();
+                json.put("model", "llama3.1:latest");
+                json.put("prompt", "Analyze this Java code for energy efficiency:\n" + code);
+
+                try (OutputStream os = conn.getOutputStream()) {
+                    byte[] input = json.toString().getBytes("utf-8");
+                    os.write(input, 0, input.length);
                 }
-                catch ( IOException e )
-                {
-                    // ignore
+
+                int responseCode = conn.getResponseCode();
+                System.out.println("Ollama response code: " + responseCode);
+
+                if (responseCode == 200) {
+                    try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), "utf-8"))) {
+                        String line;
+                        StringBuilder fullResponse = new StringBuilder();
+                        while ((line = br.readLine()) != null) {
+                            if (!line.trim().isEmpty()) {
+                                JSONObject chunk = new JSONObject(line);
+                                if (chunk.has("response")) {
+                                    fullResponse.append(chunk.getString("response"));
+                                }
+                            }
+                        }
+                        getLog().info("Ollama response: " + fullResponse.toString());
+                    }
+                } else {
+                    try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getErrorStream(), "utf-8"))) {
+                        StringBuilder error = new StringBuilder();
+                        String line;
+                        while ((line = br.readLine()) != null) {
+                            error.append(line.trim());
+                        }
+                        getLog().error("Error response: " + error);
+                    }
                 }
+
+            } catch (Exception e) {
+                getLog().error(e.getMessage());
             }
         }
     }
-}
+
+
