@@ -1,11 +1,16 @@
 package org.work;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.json.JSONObject;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.client.RestTemplate;
 
 import java.io.*;
 import java.nio.file.Files;
@@ -38,9 +43,10 @@ public class GreenCheckMojo extends AbstractMojo {
 
         for (File file : javaFiles) {
             try {
-                getLog().info("File analysing "+file.getName());
+                getLog().info("File analysing " + file.getName());
                 List<String> lines = Files.readAllLines(file.toPath());
                 String content = String.join("\n", lines);
+                getMetrics();
                 analyzeWithOllama(content);
             } catch (IOException e) {
                 getLog().error("Failed to read file: " + file.getName(), e);
@@ -57,56 +63,70 @@ public class GreenCheckMojo extends AbstractMojo {
     }
 
 
-    private  void analyzeWithOllama(String code) {
-            try {
-                URL url = new URL("http://localhost:11434/api/generate");
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("POST");
-                conn.setDoOutput(true);
-                conn.setRequestProperty("Content-Type", "application/json");
+    private void analyzeWithOllama(String code) {
+        try {
+            URL url = new URL("http://localhost:11434/api/generate");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Content-Type", "application/json");
 
-                // Build JSON payload safely
-                JSONObject json = new JSONObject();
-                json.put("model", "llama3.1:latest");
-                json.put("prompt", "Analyze this Java code for energy efficiency:\n" + code);
+            // Build JSON payload safely
+            JSONObject json = new JSONObject();
+            json.put("model", "llama3.1:latest");
+            json.put("prompt", "Analyze this Java code for energy efficiency:\n" + code);
 
-                try (OutputStream os = conn.getOutputStream()) {
-                    byte[] input = json.toString().getBytes("utf-8");
-                    os.write(input, 0, input.length);
-                }
+            try (OutputStream os = conn.getOutputStream()) {
+                byte[] input = json.toString().getBytes("utf-8");
+                os.write(input, 0, input.length);
+            }
 
-                int responseCode = conn.getResponseCode();
-                System.out.println("Ollama response code: " + responseCode);
+            int responseCode = conn.getResponseCode();
+            System.out.println("Ollama response code: " + responseCode);
 
-                if (responseCode == 200) {
-                    try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), "utf-8"))) {
-                        String line;
-                        StringBuilder fullResponse = new StringBuilder();
-                        while ((line = br.readLine()) != null) {
-                            if (!line.trim().isEmpty()) {
-                                JSONObject chunk = new JSONObject(line);
-                                if (chunk.has("response")) {
-                                    fullResponse.append(chunk.getString("response"));
-                                }
+            if (responseCode == 200) {
+                try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), "utf-8"))) {
+                    String line;
+                    StringBuilder fullResponse = new StringBuilder();
+                    while ((line = br.readLine()) != null) {
+                        if (!line.trim().isEmpty()) {
+                            JSONObject chunk = new JSONObject(line);
+                            if (chunk.has("response")) {
+                                fullResponse.append(chunk.getString("response"));
                             }
                         }
-                        getLog().info("Ollama response: " + fullResponse.toString());
                     }
-                } else {
-                    try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getErrorStream(), "utf-8"))) {
-                        StringBuilder error = new StringBuilder();
-                        String line;
-                        while ((line = br.readLine()) != null) {
-                            error.append(line.trim());
-                        }
-                        getLog().error("Error response: " + error);
-                    }
+                    getLog().info("Ollama response: " + fullResponse.toString());
                 }
-
-            } catch (Exception e) {
-                getLog().error(e.getMessage());
+            } else {
+                try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getErrorStream(), "utf-8"))) {
+                    StringBuilder error = new StringBuilder();
+                    String line;
+                    while ((line = br.readLine()) != null) {
+                        error.append(line.trim());
+                    }
+                    getLog().error("Error response: " + error);
+                }
             }
+
+        } catch (Exception e) {
+            getLog().error(e.getMessage());
         }
     }
+
+    public JsonNode getMetrics() {
+        String url = "http://localhost:9000/metrics";
+        RestTemplate restTemplate = new RestTemplate();
+        ResponseEntity<String> responseEntity = restTemplate.getForEntity(url, String.class);
+        String response = responseEntity.getBody();
+        getLog().info("METRICS : " + response);
+        ObjectMapper mapper = new ObjectMapper();
+        try {
+            return mapper.readTree(response);
+        } catch (JsonProcessingException x) {
+            throw new RuntimeException("Failed to parse Prometheus response : ", x);
+        }
+    }
+}
 
 
