@@ -46,7 +46,6 @@ public class GreenCheckMojo extends AbstractMojo {
                 getLog().info("File analysing " + file.getName());
                 List<String> lines = Files.readAllLines(file.toPath());
                 String content = String.join("\n", lines);
-                getMetrics();
                 analyzeWithOllama(content);
             } catch (IOException e) {
                 getLog().error("Failed to read file: " + file.getName(), e);
@@ -70,7 +69,7 @@ public class GreenCheckMojo extends AbstractMojo {
             conn.setRequestMethod("POST");
             conn.setDoOutput(true);
             conn.setRequestProperty("Content-Type", "application/json");
-
+            getMetrics();
             // Build JSON payload safely
             JSONObject json = new JSONObject();
             json.put("model", "llama3.1:latest");
